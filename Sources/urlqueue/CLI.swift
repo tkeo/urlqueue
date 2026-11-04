@@ -1,0 +1,216 @@
+import AppKit
+import Foundation
+
+enum CLI {
+    static let usage = """
+    urlqueue — 後で開く URL をためておく macOS アプリ
+
+    使い方:
+      urlqueue <URL>...              URL をキューに追加してアプリを前面に出す
+      urlqueue add <URL>...          同上（--no-open でアプリを起動しない）
+      urlqueue add -                 標準入力から 1 行 1 URL で追加
+      urlqueue list                  キューを一覧表示
+      urlqueue open [番号]           指定番号を開いて削除（省略時は先頭）
+      urlqueue open --all            すべて開いて削除
+      urlqueue remove <番号>...      開かずに削除
+      urlqueue clear                 すべて削除
+      urlqueue gui                   GUI を起動（.app から呼ばれる）
+      urlqueue path                  キューファイルのパスを表示
+      urlqueue --help
+
+    番号は `urlqueue list` の表示順（1 始まり）です。
+    キューは \(QueuePaths.queueFile.path) に保存されます。
+    URLQUEUE_DIR 環境変数で保存先を変更できます。
+    """
+
+    /// 終了コードを返す。
+    static func run(_ args: [String]) -> Int32 {
+        guard let first = args.first else { return 0 }
+
+        switch first {
+        case "--help", "-h", "help":
+            print(usage)
+            return 0
+
+        case "path":
+            print(QueuePaths.queueFile.path)
+            return 0
+
+        case "list", "ls":
+            return list()
+
+        case "add":
+            var rest = Array(args.dropFirst())
+            let launch = !rest.contains("--no-open")
+            rest.removeAll { $0 == "--no-open" }
+            if rest == ["-"] {
+                rest = readURLsFromStdin()
+            }
+            return add(rest, launchApp: launch)
+
+        case "open":
+            return open(Array(args.dropFirst()))
+
+        case "remove", "rm", "delete":
+            return remove(Array(args.dropFirst()))
+
+        case "clear":
+            QueueIO.mutate { $0.items.removeAll() }
+            print("キューを空にしました")
+            return 0
+
+        default:
+            // `urlqueue <URL>...` のショートハンド
+            if first.hasPrefix("-") {
+                FileHandle.standardError.write(Data("不明なオプション: \(first)\n\n\(usage)\n".utf8))
+                return 2
+            }
+            return add(args, launchApp: true)
+        }
+    }
+
+    // MARK: - サブコマンド
+
+    private static func add(_ raw: [String], launchApp: Bool) -> Int32 {
+        guard !raw.isEmpty else {
+            FileHandle.standardError.write(Data("URL を指定してください\n".utf8))
+            return 2
+        }
+
+        var accepted: [String] = []
+        var rejected: [String] = []
+        for s in raw {
+            if let n = URLNormalizer.normalize(s) { accepted.append(n) } else { rejected.append(s) }
+        }
+
+        for bad in rejected {
+            FileHandle.standardError.write(Data("URL として解釈できませんでした: \(bad)\n".utf8))
+        }
+        guard !accepted.isEmpty else { return 1 }
+
+        QueueIO.mutate { f in
+            for url in accepted { f.items.append(QueueItem(url: url)) }
+        }
+        for url in accepted { print("追加: \(url)") }
+
+        if launchApp { activateApp() }
+        return rejected.isEmpty ? 0 : 1
+    }
+
+    private static func list() -> Int32 {
+        let items = QueueIO.read().items
+        if items.isEmpty {
+            print("キューは空です")
+            return 0
+        }
+        let width = String(items.count).count
+        for (i, item) in items.enumerated() {
+            let n = String(i + 1).leftPadded(to: width)
+            print("\(n). \(item.url)")
+        }
+        return 0
+    }
+
+    private static func open(_ args: [String]) -> Int32 {
+        let items = QueueIO.read().items
+        guard !items.isEmpty else {
+            print("キューは空です")
+            return 0
+        }
+
+        let targets: [QueueItem]
+        if args.contains("--all") || args.contains("-a") {
+            targets = items
+        } else if let arg = args.first {
+            guard let n = Int(arg), n >= 1, n <= items.count else {
+                FileHandle.standardError.write(
+                    Data("番号は 1〜\(items.count) で指定してください: \(arg)\n".utf8))
+                return 2
+            }
+            targets = [items[n - 1]]
+        } else {
+            targets = [items[0]]
+        }
+
+        for item in targets {
+            if let url = URL(string: item.url) {
+                NSWorkspace.shared.open(url)
+                print("開く: \(item.url)")
+            }
+        }
+        let ids = Set(targets.map(\.id))
+        QueueIO.mutate { $0.items.removeAll { ids.contains($0.id) } }
+        return 0
+    }
+
+    private static func remove(_ args: [String]) -> Int32 {
+        let items = QueueIO.read().items
+        guard !args.isEmpty else {
+            FileHandle.standardError.write(Data("削除する番号を指定してください\n".utf8))
+            return 2
+        }
+
+        // 先に全引数を検証してから削除する（一部だけ消える事故を防ぐ）
+        var targets: [QueueItem] = []
+        for arg in args {
+            guard let n = Int(arg), n >= 1, n <= items.count else {
+                FileHandle.standardError.write(
+                    Data("番号は 1〜\(items.count) で指定してください: \(arg)\n".utf8))
+                return 2
+            }
+            targets.append(items[n - 1])
+        }
+
+        let ids = Set(targets.map(\.id))
+        QueueIO.mutate { $0.items.removeAll { ids.contains($0.id) } }
+        for item in targets { print("削除: \(item.url)") }
+        return 0
+    }
+
+    // MARK: - ヘルパ
+
+    private static func readURLsFromStdin() -> [String] {
+        var lines: [String] = []
+        while let line = readLine(strippingNewline: true) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { lines.append(t) }
+        }
+        return lines
+    }
+
+    /// 自分自身が入っている .app を探して起動／前面化する。
+    private static func activateApp() {
+        guard let bundle = enclosingAppBundleURL() else { return }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: bundle, configuration: config) { _, error in
+            if let error {
+                FileHandle.standardError.write(
+                    Data("アプリの起動に失敗しました: \(error.localizedDescription)\n".utf8))
+            }
+        }
+        // openApplication は非同期なので、投げ終わるまで少し待つ
+        Thread.sleep(forTimeInterval: 0.25)
+    }
+
+    /// 実行ファイルが <Something>.app/Contents/MacOS/urlqueue にあるかを辿る。
+    static func enclosingAppBundleURL() -> URL? {
+        let exe = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+            .resolvingSymlinksInPath()
+        // urlqueue -> MacOS -> Contents -> Foo.app
+        let candidate = exe
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        guard candidate.pathExtension == "app",
+              FileManager.default.fileExists(atPath: candidate.path)
+        else { return nil }
+        return candidate
+    }
+}
+
+private extension String {
+    func leftPadded(to width: Int) -> String {
+        count >= width ? self : String(repeating: " ", count: width - count) + self
+    }
+}
