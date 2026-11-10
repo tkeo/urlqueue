@@ -8,6 +8,7 @@
 - 一覧のクリックでデフォルトブラウザで開き、同時に削除
 - 開かずに削除も可能（行の × / 右クリック / `urlqueue remove`）
 - GUI と CLI は `~/.urlqueue/queue.json` を共有。アプリ未起動でもキューに溜まる
+- **自分自身をデフォルトブラウザにできる** — あらゆるリンクのクリックがキューに入る
 
 依存ライブラリなし（Swift + SwiftUI + AppKit のみ）。
 
@@ -64,6 +65,17 @@ urlqueue --help
 スキームを省略した `example.com` は `https://` を補う。
 URL として解釈できない引数はスキップし、終了コード 1 を返す。
 
+### 開く先のブラウザ
+
+```sh
+urlqueue browser              # 現在の開く先
+urlqueue browser --list       # 候補一覧
+urlqueue browser Chrome       # 名前 / bundle ID / .app パスで指定
+urlqueue browser --system     # システムのデフォルトに戻す
+```
+
+設定は `~/.urlqueue/config.json` に保存される。未設定ならシステムのデフォルトブラウザを使う。
+
 ### GUI の操作
 
 | 操作 | 結果 |
@@ -80,19 +92,73 @@ URL として解釈できない引数はスキップし、終了コード 1 を�
 
 ウィンドウを閉じてもメニューバーに常駐し続ける。
 
+## デフォルトブラウザとして使う
+
+このアプリ自身を http/https のハンドラにすると、**どのアプリでリンクをクリックしても
+ブラウザが開かず、キューに溜まる**ようになる。あとでまとめて片付けたいときに便利。
+
+```sh
+urlqueue default-browser              # 現在のハンドラを表示
+urlqueue default-browser set          # このアプリをデフォルトブラウザにする
+urlqueue default-browser unset Chrome # Chrome に戻す
+```
+
+`set` / `unset` は macOS の確認ダイアログを出す。**ダイアログをクリックするまでコマンドは
+返らない**（最大 10 分待つ）。GUI のフッタにある「デフォルトブラウザにする」ボタンでも同じことができる。
+
+ダイアログは `CoreServicesUIAgent` が表示しているため、コマンドを途中で `Ctrl-C` しても
+ダイアログは画面に残る。放置すると重なっていくので、出たらその場で答えるのがよい。
+
+### 無限ループについて
+
+自分がデフォルトブラウザになると、`NSWorkspace.open` は自分自身に戻ってくる。
+そのままだと「開く → キューに入る → 開く」で永遠に終わらないので、開く先を
+デフォルトブラウザとは独立に持っている。ガードは 3 段:
+
+| 状況 | 挙動 |
+| --- | --- |
+| `urlqueue browser` で自分自身を指定 | 拒否（exit 2） |
+| `config.json` に自分自身が書かれている | 無視してシステムのデフォルトにフォールバック |
+| 開く先がどうしても解決できない | **開かずにキューに残す**（URL を失わない） |
+
+`default-browser set` は乗っ取る直前に、その時点のデフォルトブラウザを
+開く先として `config.json` に自動保存する。つまり Chrome がデフォルトの状態で `set` すれば、
+以降は「リンク → キュー → クリック → Chrome」という流れになる。
+
+### 元に戻す
+
+```sh
+urlqueue default-browser unset Chrome
+```
+
+システム設定 > デスクトップとDock > デフォルトのWebブラウザ からでも戻せる。
+アプリを消す前に必ず戻すこと（ハンドラが存在しないとリンクが開けなくなる）。
+
 ## 仕組み
 
 CLI と GUI は同一バイナリ。引数の有無でモードを切り替える。
 
 ```
+他アプリのリンククリック ──LaunchServices──┐   (デフォルトブラウザにした場合)
+                                          ↓
 urlqueue <URL>  ──書き込み──>  ~/.urlqueue/queue.json  <──監視── UrlQueue.app (GUI)
-                                        ↑
-                                 flock(2) で排他、rename(2) で原子的差し替え
+                                        ↑                          │
+                                 flock(2) で排他                   │ クリック
+                                 rename(2) で原子的差し替え         ↓
+                                                            config.json の
+                                                            openWithBundleID
+                                                            （例: Chrome）
 ```
 
 GUI は保存ディレクトリを `DispatchSource`（vnode）で監視しているので、
 別プロセスの変更が即座に一覧へ反映される。加えて CLI が
 `DistributedNotificationCenter` で変更を通知し、反映を早めている。
+
+`config.json` の形:
+
+```json
+{ "version": 1, "openWithBundleID": "com.google.Chrome" }
+```
 
 `queue.json` の形:
 

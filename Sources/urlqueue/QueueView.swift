@@ -12,11 +12,16 @@ struct QueueView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if let message = store.openFailureMessage {
+                warning(message)
+            }
             if store.items.isEmpty {
                 emptyState
             } else {
                 list
             }
+            Divider()
+            footer
         }
         .frame(minWidth: compact ? 360 : 420, minHeight: compact ? 0 : 240)
     }
@@ -68,6 +73,60 @@ struct QueueView: View {
             }
         }
         .frame(maxHeight: compact ? 420 : .infinity)
+    }
+
+    // MARK: - 警告
+
+    private func warning(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
+    }
+
+    // MARK: - フッタ（開く先ブラウザ / デフォルトブラウザ設定）
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            Text("開く先")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Menu {
+                ForEach(store.browserCandidates, id: \.self) { app in
+                    Button(BrowserResolver.name(of: app)) { store.setOpener(app) }
+                }
+                Divider()
+                Button("システムのデフォルト") { store.setOpener(nil) }
+            } label: {
+                Text(store.openerName ?? "未設定")
+                    .foregroundStyle(store.openerURL == nil ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+
+            Spacer()
+
+            if store.isDefaultBrowser {
+                Label("デフォルトブラウザ", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                    .help("すべてのリンクがこのアプリのキューに入ります")
+            } else {
+                Button("デフォルトブラウザにする") { store.makeDefaultBrowser() }
+                    .controlSize(.small)
+                    .help("リンクをクリックするとブラウザで開かず、このキューに溜まるようになります")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     private var emptyState: some View {

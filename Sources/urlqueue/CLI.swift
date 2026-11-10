@@ -16,6 +16,17 @@ enum CLI {
       urlqueue clear                 すべて削除
       urlqueue gui                   GUI を起動（.app から呼ばれる）
       urlqueue path                  キューファイルのパスを表示
+
+    開く先のブラウザ:
+      urlqueue browser               現在の開く先を表示
+      urlqueue browser --list        候補を一覧表示
+      urlqueue browser <名前>        開く先を設定（例: urlqueue browser Chrome）
+      urlqueue browser --system      システムのデフォルトに戻す
+
+    デフォルトブラウザの乗っ取り:
+      urlqueue default-browser              現在の http/https ハンドラを表示
+      urlqueue default-browser set          このアプリをデフォルトブラウザにする
+      urlqueue default-browser unset <名前> 指定ブラウザをデフォルトに戻す
       urlqueue --help
 
     番号は `urlqueue list` の表示順（1 始まり）です。
@@ -53,6 +64,12 @@ enum CLI {
 
         case "remove", "rm", "delete":
             return remove(Array(args.dropFirst()))
+
+        case "browser":
+            return browser(Array(args.dropFirst()))
+
+        case "default-browser":
+            return defaultBrowser(Array(args.dropFirst()))
 
         case "clear":
             QueueIO.mutate { $0.items.removeAll() }
@@ -132,14 +149,24 @@ enum CLI {
             targets = [items[0]]
         }
 
+        guard BrowserResolver.opener() != nil else {
+            FileHandle.standardError.write(
+                Data("開く先のブラウザが解決できません。`urlqueue browser <名前>` で設定してください\n".utf8))
+            return 1
+        }
+
+        var openedIDs = Set<UUID>()
         for item in targets {
-            if let url = URL(string: item.url) {
-                NSWorkspace.shared.open(url)
-                print("開く: \(item.url)")
+            guard let url = URL(string: item.url) else {
+                openedIDs.insert(item.id)
+                continue
+            }
+            if case .opened(let appName) = BrowserResolver.open(url) {
+                print("開く: \(item.url)  → \(appName)")
+                openedIDs.insert(item.id)
             }
         }
-        let ids = Set(targets.map(\.id))
-        QueueIO.mutate { $0.items.removeAll { ids.contains($0.id) } }
+        QueueIO.mutate { $0.items.removeAll { openedIDs.contains($0.id) } }
         return 0
     }
 
@@ -165,6 +192,130 @@ enum CLI {
         QueueIO.mutate { $0.items.removeAll { ids.contains($0.id) } }
         for item in targets { print("削除: \(item.url)") }
         return 0
+    }
+
+    // MARK: - ブラウザ設定
+
+    private static func browser(_ args: [String]) -> Int32 {
+        if args.contains("--list") || args.contains("-l") {
+            let candidates = BrowserResolver.candidates()
+            if candidates.isEmpty {
+                print("候補が見つかりませんでした")
+                return 1
+            }
+            for app in candidates {
+                let id = Bundle(url: app)?.bundleIdentifier ?? "-"
+                print("\(BrowserResolver.name(of: app))  (\(id))")
+            }
+            return 0
+        }
+
+        if args.contains("--system") {
+            var config = ConfigStore.load()
+            config.openWithBundleID = nil
+            ConfigStore.save(config)
+            print("開く先をシステムのデフォルトに戻しました")
+            return showOpener()
+        }
+
+        guard let query = args.first else { return showOpener() }
+
+        guard let app = BrowserResolver.find(query) else {
+            FileHandle.standardError.write(
+                Data("ブラウザが見つかりませんでした: \(query)\n--list で候補を確認できます\n".utf8))
+            return 1
+        }
+        guard !BrowserResolver.isSelf(app) else {
+            FileHandle.standardError.write(
+                Data("自分自身は開く先にできません（無限ループになります）\n".utf8))
+            return 2
+        }
+        guard let id = Bundle(url: app)?.bundleIdentifier else {
+            FileHandle.standardError.write(Data("bundle ID を取得できませんでした: \(app.path)\n".utf8))
+            return 1
+        }
+
+        var config = ConfigStore.load()
+        config.openWithBundleID = id
+        ConfigStore.save(config)
+        print("開く先を \(BrowserResolver.name(of: app)) にしました")
+        return 0
+    }
+
+    private static func showOpener() -> Int32 {
+        let configured = ConfigStore.load().openWithBundleID
+        guard let app = BrowserResolver.opener() else {
+            FileHandle.standardError.write(
+                Data("開く先が解決できません。`urlqueue browser <名前>` で設定してください\n".utf8))
+            return 1
+        }
+        let source = configured == nil ? "システムのデフォルト" : "設定値"
+        print("開く先: \(BrowserResolver.name(of: app))  [\(source)]")
+        print("        \(app.path)")
+        return 0
+    }
+
+    // MARK: - デフォルトブラウザ
+
+    private static func defaultBrowser(_ args: [String]) -> Int32 {
+        switch args.first {
+        case nil, "status":
+            guard let current = DefaultBrowser.currentHandler() else {
+                print("http/https のハンドラが見つかりません")
+                return 1
+            }
+            let mark = BrowserResolver.isSelf(current) ? "（このアプリ）" : ""
+            print("デフォルトブラウザ: \(BrowserResolver.name(of: current))\(mark)")
+            print("                    \(current.path)")
+            return 0
+
+        case "set":
+            guard let bundle = enclosingAppBundleURL() else {
+                FileHandle.standardError.write(
+                    Data("インストール済みの UrlQueue.app 経由で実行してください\n".utf8))
+                return 2
+            }
+            // 乗っ取る前に、今のデフォルトブラウザを開く先として覚えておく
+            if ConfigStore.load().openWithBundleID == nil,
+               let current = DefaultBrowser.currentHandler(),
+               !BrowserResolver.isSelf(current),
+               let id = Bundle(url: current)?.bundleIdentifier {
+                var config = ConfigStore.load()
+                config.openWithBundleID = id
+                ConfigStore.save(config)
+                print("開く先を \(BrowserResolver.name(of: current)) に設定しました")
+            }
+            print("macOS の確認ダイアログで「\"\(BrowserResolver.name(of: bundle))\" に変更」を選んでください…")
+            fflush(stdout)
+            if let error = DefaultBrowser.set(to: bundle) {
+                FileHandle.standardError.write(Data("失敗: \(error.localizedDescription)\n".utf8))
+                return 1
+            }
+            return defaultBrowser([])
+
+        case "unset":
+            guard let query = args.dropFirst().first else {
+                FileHandle.standardError.write(
+                    Data("戻す先のブラウザを指定してください（例: urlqueue default-browser unset Chrome）\n".utf8))
+                return 2
+            }
+            guard let app = BrowserResolver.find(query), !BrowserResolver.isSelf(app) else {
+                FileHandle.standardError.write(Data("ブラウザが見つかりませんでした: \(query)\n".utf8))
+                return 1
+            }
+            print("macOS の確認ダイアログで「\"\(BrowserResolver.name(of: app))\" に変更」を選んでください…")
+            fflush(stdout)
+            if let error = DefaultBrowser.set(to: app) {
+                FileHandle.standardError.write(Data("失敗: \(error.localizedDescription)\n".utf8))
+                return 1
+            }
+            return defaultBrowser([])
+
+        default:
+            FileHandle.standardError.write(
+                Data("不明なサブコマンド: \(args[0])\n".utf8))
+            return 2
+        }
     }
 
     // MARK: - ヘルパ

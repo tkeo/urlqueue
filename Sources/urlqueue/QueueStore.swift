@@ -9,6 +9,15 @@ final class QueueStore: ObservableObject {
 
     @Published private(set) var items: [QueueItem] = []
 
+    /// 一覧から開くときに使うブラウザ（nil なら未解決 = 開けない）
+    @Published private(set) var openerURL: URL?
+    /// 自分自身が http/https のデフォルトハンドラになっているか
+    @Published private(set) var isDefaultBrowser: Bool = false
+    /// 開く先が無くて開けなかったときに出す警告
+    @Published var openFailureMessage: String?
+
+    var openerName: String? { openerURL.map(BrowserResolver.name(of:)) }
+
     private var dirFD: Int32 = -1
     private var dirSource: DispatchSourceFileSystemObject?
     private var reloadWorkItem: DispatchWorkItem?
@@ -33,6 +42,44 @@ final class QueueStore: ObservableObject {
 
     func reload() {
         items = QueueIO.read().items
+        refreshBrowserState()
+    }
+
+    /// config.json / LaunchServices 由来の状態を読み直す
+    func refreshBrowserState() {
+        openerURL = BrowserResolver.opener()
+        isDefaultBrowser = DefaultBrowser.isSelf
+    }
+
+    /// 開く先の候補（起動のたびに変わるものではないのでキャッシュする）
+    lazy var browserCandidates: [URL] = BrowserResolver.candidates()
+
+    /// 自分自身を http/https のデフォルトハンドラにする。macOS が確認ダイアログを出す。
+    func makeDefaultBrowser() {
+        guard let bundle = CLI.enclosingAppBundleURL() ?? Bundle.main.bundleURL.asAppBundle else {
+            openFailureMessage = "インストール済みの UrlQueue.app から実行してください"
+            return
+        }
+        // 乗っ取る前に、今のデフォルトブラウザを「開く先」として覚えておく。
+        // これをしないと自分自身にリダイレクトし続けて URL を開けなくなる。
+        if ConfigStore.load().openWithBundleID == nil,
+           let current = DefaultBrowser.currentHandler(),
+           !BrowserResolver.isSelf(current) {
+            setOpener(current)
+        }
+        if let error = DefaultBrowser.set(to: bundle) {
+            openFailureMessage = error.localizedDescription
+        } else {
+            openFailureMessage = nil
+        }
+        refreshBrowserState()
+    }
+
+    func setOpener(_ appURL: URL?) {
+        var config = ConfigStore.load()
+        config.openWithBundleID = appURL.flatMap { Bundle(url: $0)?.bundleIdentifier }
+        ConfigStore.save(config)
+        refreshBrowserState()
     }
 
     /// 連続した変更をまとめる。
@@ -105,12 +152,20 @@ final class QueueStore: ObservableObject {
         return normalized.count
     }
 
-    /// デフォルトブラウザで開き、一覧から削除する。
+    /// 設定されたブラウザで開き、一覧から削除する。
+    /// 開く先が解決できないときは削除せず警告を出す（URL を失わないため）。
     func openAndRemove(_ item: QueueItem) {
-        if let url = URL(string: item.url) {
-            NSWorkspace.shared.open(url)
+        guard let url = URL(string: item.url) else {
+            remove(item)
+            return
         }
-        remove(item)
+        switch BrowserResolver.open(url) {
+        case .opened:
+            openFailureMessage = nil
+            remove(item)
+        case .noBrowserConfigured:
+            openFailureMessage = noBrowserMessage
+        }
     }
 
     func remove(_ item: QueueItem) {
@@ -128,12 +183,25 @@ final class QueueStore: ObservableObject {
     func openAll() {
         let snapshot = items
         guard !snapshot.isEmpty else { return }
-        for item in snapshot {
-            if let url = URL(string: item.url) {
-                NSWorkspace.shared.open(url)
-            }
+        guard BrowserResolver.opener() != nil else {
+            openFailureMessage = noBrowserMessage
+            return
         }
-        remove(ids: Set(snapshot.map(\.id)))
+        var openedIDs = Set<UUID>()
+        for item in snapshot {
+            guard let url = URL(string: item.url) else {
+                openedIDs.insert(item.id)
+                continue
+            }
+            if case .opened = BrowserResolver.open(url) { openedIDs.insert(item.id) }
+        }
+        openFailureMessage = nil
+        remove(ids: openedIDs)
+    }
+
+    private var noBrowserMessage: String {
+        "開く先のブラウザが設定されていません。このアプリ自身がデフォルトブラウザなので、"
+        + "開く先を明示的に選んでください。"
     }
 
     func clear() {

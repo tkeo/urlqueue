@@ -14,6 +14,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 起動直後に一覧ウィンドウを出すか（CLI からの追加で前面化する場合は true）
     var showWindowOnLaunch: Bool = true
 
+    /// デフォルトブラウザとして URL を受け取って起動された場合は true。
+    /// このときはウィンドウを出さず、フォーカスも奪わない。
+    private var launchedToHandleURL = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         store.start()
         buildMainMenu()
@@ -21,9 +25,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildWindow()
         observeItemCount()
 
+        // application(_:open:) は didFinishLaunching の直後に来ることがあるので、
+        // URL 受信の有無が確定するまで 1 ターン待ってから判断する。
         if showWindowOnLaunch {
-            showWindow()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.launchedToHandleURL else { return }
+                self.showWindow()
+            }
         }
+    }
+
+    /// 自分がデフォルトブラウザのときに他アプリから渡される URL。
+    /// 開かずにキューへ積むのがこのアプリの役目。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        launchedToHandleURL = true
+        store.add(urls.map(\.absoluteString))
+        flashStatusItem()
     }
 
     // メニューバーに常駐するので、ウィンドウを閉じても終了しない
@@ -35,6 +52,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         showWindow()
         return true
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // システム設定側でデフォルトブラウザが変わっている可能性があるので取り直す
+        store.refreshBrowserState()
+    }
+
+    /// URL を受け取ったことが分かるように、メニューバーのアイコンを一瞬光らせる
+    private func flashStatusItem() {
+        guard let button = statusItem?.button else { return }
+        button.highlight(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            button.highlight(false)
+        }
     }
 
     // MARK: - ウィンドウ

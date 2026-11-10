@@ -51,6 +51,33 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>       <true/>
   <!-- Dock に出す通常アプリ。メニューバー常駐は実行時に併設する -->
   <key>LSUIElement</key>                   <false/>
+
+  <!-- http/https を宣言すると「デフォルトのWebブラウザ」の選択肢に出る -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>     <string>Web site URL</string>
+      <key>CFBundleTypeRole</key>    <string>Viewer</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>http</string>
+        <string>https</string>
+      </array>
+    </dict>
+  </array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>    <string>HTML Document</string>
+      <key>CFBundleTypeRole</key>    <string>Viewer</string>
+      <key>LSHandlerRank</key>       <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.html</string>
+        <string>public.xhtml</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
@@ -60,6 +87,10 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 echo "==> ad-hoc 署名"
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 \
   || echo "    (署名をスキップしました。初回起動時に Gatekeeper の確認が出る場合があります)"
+
+echo "==> Launch Services へ登録"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+  -f "$APP" >/dev/null 2>&1 || true
 
 echo "==> 完成: $APP"
 
