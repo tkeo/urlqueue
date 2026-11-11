@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private var cancellables = Set<AnyCancellable>()
 
+    /// 直前に見えていた項目の ID。nil は「まだ一度も読んでいない」= 起動直後。
+    private var knownItemIDs: Set<UUID>?
+
     /// 起動直後に一覧ウィンドウを出すか（CLI からの追加で前面化する場合は true）
     var showWindowOnLaunch: Bool = true
 
@@ -122,14 +125,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 件数をメニューバーのタイトルに出す
+    /// 件数をメニューバーのタイトルに出し、URL が増えたら Dock アイコンを跳ねさせる
     private func observeItemCount() {
         store.$items
             .receive(on: RunLoop.main)
             .sink { [weak self] items in
-                self?.statusItem?.button?.title = items.isEmpty ? "" : " \(items.count)"
+                guard let self else { return }
+                self.statusItem?.button?.title = items.isEmpty ? "" : " \(items.count)"
+                self.bounceIfItemsArrived(items)
             }
             .store(in: &cancellables)
+    }
+
+    /// 新しい URL が増えたときだけ Dock アイコンを 1 回バウンドさせる。
+    /// 件数ではなく ID の差分で見るので、同時に追加と削除が起きても取りこぼさない。
+    private func bounceIfItemsArrived(_ items: [QueueItem]) {
+        let ids = Set(items.map(\.id))
+        defer { knownItemIDs = ids }
+
+        // 起動直後の初回ロードは「増えた」とみなさない（起動時は Dock が自前で跳ねる）
+        guard let known = knownItemIDs else { return }
+        guard !ids.subtracting(known).isEmpty else { return }
+
+        // informationalRequest は 1 秒だけ跳ねる。前面にいるときは macOS 側が無視する。
+        _ = NSApp.requestUserAttention(.informationalRequest)
     }
 
     // MARK: - メインメニュー（Cmd+Q / Cmd+W などを有効にする）
