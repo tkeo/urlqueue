@@ -6,9 +6,13 @@ enum CLI {
     urlqueue — 後で開く URL をためておく macOS アプリ
 
     使い方:
-      urlqueue <URL>...              URL をキューに追加してアプリを前面に出す
-      urlqueue add <URL>...          同上（--no-open でアプリを起動しない）
+      urlqueue <URL>...              URL をキューに追加する（ウィンドウは前に出ない）
+      urlqueue add <URL>...          同上
       urlqueue add -                 標準入力から 1 行 1 URL で追加
+
+    add のオプション:
+      --front   追加後にウィンドウを前面に出す
+      --no-open アプリが未起動でも起動しない（キューに書くだけ）
       urlqueue list                  キューを一覧表示
       urlqueue open [番号]           指定番号を開いて削除（省略時は先頭）
       urlqueue open --all            すべて開いて削除
@@ -51,13 +55,7 @@ enum CLI {
             return list()
 
         case "add":
-            var rest = Array(args.dropFirst())
-            let launch = !rest.contains("--no-open")
-            rest.removeAll { $0 == "--no-open" }
-            if rest == ["-"] {
-                rest = readURLsFromStdin()
-            }
-            return add(rest, launchApp: launch)
+            return addCommand(Array(args.dropFirst()))
 
         case "open":
             return open(Array(args.dropFirst()))
@@ -82,13 +80,25 @@ enum CLI {
                 FileHandle.standardError.write(Data("不明なオプション: \(first)\n\n\(usage)\n".utf8))
                 return 2
             }
-            return add(args, launchApp: true)
+            return addCommand(args)
         }
     }
 
     // MARK: - サブコマンド
 
-    private static func add(_ raw: [String], launchApp: Bool) -> Int32 {
+    private static func addCommand(_ raw: [String]) -> Int32 {
+        let flags: Set<String> = ["--no-open", "--front", "--show"]
+        var rest = raw
+        let noLaunch = rest.contains("--no-open")
+        let front = rest.contains("--front") || rest.contains("--show")
+        rest.removeAll { flags.contains($0) }
+        if rest == ["-"] {
+            rest = readURLsFromStdin()
+        }
+        return add(rest, launch: !noLaunch, activate: front)
+    }
+
+    private static func add(_ raw: [String], launch: Bool, activate: Bool) -> Int32 {
         guard !raw.isEmpty else {
             FileHandle.standardError.write(Data("URL を指定してください\n".utf8))
             return 2
@@ -110,7 +120,7 @@ enum CLI {
         }
         for url in accepted { print("追加: \(url)") }
 
-        if launchApp { activateApp() }
+        if launch { launchApp(activate: activate) }
         return rejected.isEmpty ? 0 : 1
     }
 
@@ -329,19 +339,33 @@ enum CLI {
         return lines
     }
 
-    /// 自分自身が入っている .app を探して起動／前面化する。
-    private static func activateApp() {
+    /// 自分自身が入っている .app を起動する。
+    ///
+    /// 起動済みの場合、追加した URL は queue.json のファイル監視で即座に一覧へ反映される。
+    /// そのため前面化を明示的に頼まれていない限り、何もしない（作業の邪魔をしない）。
+    private static func launchApp(activate: Bool) {
         guard let bundle = enclosingAppBundleURL() else { return }
+
+        let isRunning = !NSRunningApplication
+            .runningApplications(withBundleIdentifier: BrowserResolver.selfBundleID).isEmpty
+        if isRunning && !activate { return }
+
         let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
+        config.activates = activate
+        if !activate {
+            // 新規起動でもウィンドウを出さないよう GUI 側へ伝える
+            config.arguments = ["gui", "--background"]
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
         NSWorkspace.shared.openApplication(at: bundle, configuration: config) { _, error in
             if let error {
                 FileHandle.standardError.write(
                     Data("アプリの起動に失敗しました: \(error.localizedDescription)\n".utf8))
             }
+            semaphore.signal()
         }
-        // openApplication は非同期なので、投げ終わるまで少し待つ
-        Thread.sleep(forTimeInterval: 0.25)
+        _ = semaphore.wait(timeout: .now() + 5)
     }
 
     /// 実行ファイルが <Something>.app/Contents/MacOS/urlqueue にあるかを辿る。

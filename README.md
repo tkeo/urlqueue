@@ -45,8 +45,9 @@ export PATH="$HOME/.local/bin:$PATH"
 ## 使い方
 
 ```sh
-urlqueue https://example.com              # 追加してアプリを前面に出す
+urlqueue https://example.com              # 追加（ウィンドウは前に出ない）
 urlqueue add a.example.com b.example.com  # 複数まとめて追加
+urlqueue add https://example.com --front    # 追加後にウィンドウを前面に出す
 urlqueue add https://example.com --no-open  # アプリを起動せず追加だけ
 pbpaste | urlqueue add -                  # 標準入力から 1 行 1 URL
 urlqueue list                             # 一覧（番号は 1 始まり）
@@ -61,6 +62,16 @@ urlqueue --help
 ```
 
 引数なしで起動すると GUI が立ち上がる（`.app` からの起動と同じ）。
+
+追加してもウィンドウは前に出ない。アプリが起動済みなら、ファイル監視によって一覧へ
+静かに反映されるだけ。未起動なら裏で起動する（メニューバーに件数が出る）。
+作業中に割り込まれたくないのが普通なので、これが既定。
+
+| フラグ | 挙動 |
+| --- | --- |
+| （なし） | 起動済みなら何もしない。未起動なら裏で起動する |
+| `--front` | 追加後にウィンドウを前面に出す |
+| `--no-open` | 未起動でも起動しない。`queue.json` に書くだけ |
 
 スキームを省略した `example.com` は `https://` を補う。
 URL として解釈できない引数はスキップし、終了コード 1 を返す。
