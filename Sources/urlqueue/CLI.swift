@@ -21,6 +21,13 @@ enum CLI {
       urlqueue gui                   GUI を起動（.app から呼ばれる）
       urlqueue path                  キューファイルのパスを表示
 
+    キューに入れるドメイン（デフォルトブラウザとして受けたリンクの振り分け）:
+      urlqueue domains                 現在の指定を表示
+      urlqueue domains add <ドメイン>...   追加（サブドメインも対象になる）
+      urlqueue domains remove <ドメイン>... 削除
+      urlqueue domains clear           指定を解除（全部キューに入れる）
+      urlqueue domains test <URL>      その URL がどう振り分けられるか確認
+
     開く先のブラウザ:
       urlqueue browser               現在の開く先を表示
       urlqueue browser --list        候補を一覧表示
@@ -62,6 +69,9 @@ enum CLI {
 
         case "remove", "rm", "delete":
             return remove(Array(args.dropFirst()))
+
+        case "domains", "domain":
+            return domains(Array(args.dropFirst()))
 
         case "browser":
             return browser(Array(args.dropFirst()))
@@ -201,6 +211,106 @@ enum CLI {
         let ids = Set(targets.map(\.id))
         QueueIO.mutate { $0.items.removeAll { ids.contains($0.id) } }
         for item in targets { print("削除: \(item.url)") }
+        return 0
+    }
+
+    // MARK: - キュー対象ドメイン
+
+    private static func domains(_ args: [String]) -> Int32 {
+        var config = ConfigStore.load()
+        var list = config.domains
+
+        func save() {
+            config.queueDomains = list.isEmpty ? nil : list.sorted()
+            ConfigStore.save(config)
+        }
+
+        switch args.first {
+        case nil, "list", "ls":
+            return showDomains(list)
+
+        case "add":
+            let raw = Array(args.dropFirst())
+            guard !raw.isEmpty else {
+                FileHandle.standardError.write(Data("ドメインを指定してください\n".utf8))
+                return 2
+            }
+            var added: [String] = []
+            for item in raw {
+                let d = QueueRouter.normalize(item)
+                guard !d.isEmpty, d.contains(".") else {
+                    FileHandle.standardError.write(
+                        Data("ドメインとして解釈できませんでした: \(item)\n".utf8))
+                    continue
+                }
+                guard !list.contains(d) else { continue }
+                list.append(d)
+                added.append(d)
+            }
+            guard !added.isEmpty else {
+                print("追加するものがありませんでした")
+                return showDomains(list)
+            }
+            save()
+            for d in added { print("追加: \(d)") }
+            return showDomains(list)
+
+        case "remove", "rm", "delete":
+            let raw = Array(args.dropFirst())
+            guard !raw.isEmpty else {
+                FileHandle.standardError.write(Data("ドメインを指定してください\n".utf8))
+                return 2
+            }
+            var removed: [String] = []
+            for item in raw {
+                let d = QueueRouter.normalize(item)
+                guard list.contains(d) else {
+                    FileHandle.standardError.write(Data("指定されていません: \(item)\n".utf8))
+                    continue
+                }
+                list.removeAll { $0 == d }
+                removed.append(d)
+            }
+            guard !removed.isEmpty else { return 1 }
+            save()
+            for d in removed { print("削除: \(d)") }
+            return showDomains(list)
+
+        case "clear":
+            list = []
+            save()
+            print("ドメイン指定を解除しました")
+            return showDomains(list)
+
+        case "test":
+            guard let target = args.dropFirst().first,
+                  let normalized = URLNormalizer.normalize(target),
+                  let url = URL(string: normalized) else {
+                FileHandle.standardError.write(Data("URL を指定してください\n".utf8))
+                return 2
+            }
+            if QueueRouter.shouldQueue(url, domains: list) {
+                let why = list.isEmpty ? "ドメイン指定が無いため" : "指定ドメインに一致"
+                print("\(url.absoluteString) → キューに入れる（\(why)）")
+            } else {
+                let opener = BrowserResolver.opener().map(BrowserResolver.name(of:)) ?? "開く先が未設定"
+                print("\(url.absoluteString) → すぐ開く（\(opener)）")
+            }
+            return 0
+
+        default:
+            FileHandle.standardError.write(Data("不明なサブコマンド: \(args[0])\n".utf8))
+            return 2
+        }
+    }
+
+    private static func showDomains(_ list: [String]) -> Int32 {
+        if list.isEmpty {
+            print("ドメイン指定なし: すべての URL をキューに入れます")
+        } else {
+            print("キューに入れるドメイン（これ以外はすぐブラウザで開きます）:")
+            for d in list.sorted() { print("  \(d)") }
+        }
         return 0
     }
 

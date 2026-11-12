@@ -124,6 +124,30 @@ urlqueue default-browser unset Chrome # Chrome に戻す
 ダイアログは `CoreServicesUIAgent` が表示しているため、コマンドを途中で `Ctrl-C` しても
 ダイアログは画面に残る。放置すると重なっていくので、出たらその場で答えるのがよい。
 
+### キューに入れるドメインを絞る
+
+既定では受け取ったリンクをすべてキューに入れる。ドメインを指定すると、
+**指定したものだけキューに入り、それ以外はそのままブラウザへ受け流される**。
+
+```sh
+urlqueue domains                      # 現在の指定
+urlqueue domains add github.com       # 追加（サブドメインも対象）
+urlqueue domains add news.ycombinator.com qiita.com
+urlqueue domains remove qiita.com     # 削除
+urlqueue domains clear                # 解除（全部キューに入る）
+urlqueue domains test https://github.com/x   # 振り分け結果を確認
+```
+
+`github.com` は `github.com` 自身と `gist.github.com` のようなサブドメインにマッチする。
+`notgithub.com` にはマッチしない。入力は `https://Example.com/a` `*.example.com`
+`example.com:8080` のどれでも裸のホスト名に正規化される。
+
+この振り分けが効くのは**デフォルトブラウザとして受け取ったリンク**だけ。
+`urlqueue add` は明示的な操作なので、ドメイン指定に関係なく必ずキューに入る。
+
+開く先のブラウザが解決できない場合、受け流せないので指定外のドメインでも
+キューに入る（URL を捨てないため）。
+
 ### 無限ループについて
 
 自分がデフォルトブラウザになると、`NSWorkspace.open` は自分自身に戻ってくる。
@@ -172,8 +196,14 @@ GUI は保存ディレクトリを `DispatchSource`（vnode）で監視してい
 `config.json` の形:
 
 ```json
-{ "version": 1, "openWithBundleID": "com.google.Chrome" }
+{
+  "version": 1,
+  "openWithBundleID": "com.google.Chrome",
+  "queueDomains": ["github.com", "news.ycombinator.com"]
+}
 ```
+
+`queueDomains` が無い／空なら、受け取ったリンクはすべてキューに入る。
 
 `queue.json` の形:
 

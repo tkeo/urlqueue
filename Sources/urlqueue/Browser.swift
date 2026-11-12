@@ -8,6 +8,54 @@ struct Config: Codable {
     /// 一覧から開くときに使うブラウザの bundle ID。nil ならシステムのデフォルト。
     /// 自分自身をデフォルトブラウザにする場合は、ここを必ず埋める必要がある。
     var openWithBundleID: String?
+    /// キューに入れるドメイン。空／未設定なら全部キューに入れる（従来どおり）。
+    /// 省略されている古い config.json も読めるよう Optional にしてある。
+    var queueDomains: [String]?
+
+    var domains: [String] { queueDomains ?? [] }
+}
+
+// MARK: - 振り分け
+
+/// 受け取った URL をキューに入れるか、そのままブラウザで開くかを決める。
+enum QueueRouter {
+    /// キュー対象か。ドメイン指定が空のときは全部キューに入れる。
+    static func shouldQueue(_ url: URL, domains: [String]) -> Bool {
+        guard !domains.isEmpty else { return true }
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return true }
+        return domains.contains { matches(host: host, pattern: $0) }
+    }
+
+    /// example.com は example.com 自身とそのサブドメインにマッチする。
+    static func matches(host: String, pattern: String) -> Bool {
+        let p = normalize(pattern)
+        guard !p.isEmpty else { return false }
+        return host == p || host.hasSuffix("." + p)
+    }
+
+    /// 入力のゆらぎを吸収して裸のホスト名にする。
+    /// "https://Example.com/a", "*.example.com", ".example.com", "example.com:8080"
+    /// はいずれも "example.com" になる。
+    static func normalize(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !s.isEmpty else { return "" }
+
+        if let url = URL(string: s), let host = url.host, !host.isEmpty {
+            return trimDots(host)
+        }
+        // スキームが無い場合。パスやポートが付いていても落とす
+        if let slash = s.firstIndex(of: "/") { s = String(s[s.startIndex..<slash]) }
+        if let colon = s.firstIndex(of: ":") { s = String(s[s.startIndex..<colon]) }
+        return trimDots(s)
+    }
+
+    private static func trimDots(_ host: String) -> String {
+        var s = host
+        if s.hasPrefix("*.") { s = String(s.dropFirst(2)) }
+        while s.hasPrefix(".") { s = String(s.dropFirst()) }
+        while s.hasSuffix(".") { s = String(s.dropLast()) }
+        return s
+    }
 }
 
 enum ConfigStore {

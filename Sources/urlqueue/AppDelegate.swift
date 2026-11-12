@@ -39,10 +39,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 自分がデフォルトブラウザのときに他アプリから渡される URL。
-    /// 開かずにキューへ積むのがこのアプリの役目。
+    /// 指定ドメインはキューへ積み、それ以外はそのままブラウザへ受け流す。
     func application(_ application: NSApplication, open urls: [URL]) {
         launchedToHandleURL = true
-        store.add(urls.map(\.absoluteString))
+
+        let domains = ConfigStore.load().domains
+        var toQueue: [URL] = []
+
+        for url in urls {
+            if QueueRouter.shouldQueue(url, domains: domains) {
+                toQueue.append(url)
+                continue
+            }
+            switch BrowserResolver.open(url) {
+            case .opened:
+                break
+            case .noBrowserConfigured:
+                // 開けないなら捨てずにキューへ逃がす
+                toQueue.append(url)
+            }
+        }
+
+        guard !toQueue.isEmpty else { return }
+        store.add(toQueue.map(\.absoluteString))
         flashStatusItem()
     }
 
