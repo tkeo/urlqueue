@@ -150,6 +150,7 @@ private struct QueueRow: View {
     let item: QueueItem
 
     @State private var hovering = false
+    @ObservedObject private var clock = RelativeClock.shared
 
     var body: some View {
         HStack(spacing: 8) {
@@ -171,7 +172,7 @@ private struct QueueRow: View {
 
             Spacer(minLength: 4)
 
-            Text(item.addedAt, format: .relative(presentation: .numeric))
+            Text(RelativeTime.string(for: item.addedAt, relativeTo: clock.now))
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
@@ -192,6 +193,8 @@ private struct QueueRow: View {
         .background(hovering ? Color.accentColor.opacity(0.12) : Color.clear)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .onAppear { clock.subscribe() }
+        .onDisappear { clock.unsubscribe() }
         .onTapGesture { store.openAndRemove(item) }
         .help("クリックでデフォルトブラウザで開いて削除")
         .contextMenu {
