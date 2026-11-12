@@ -138,7 +138,9 @@ struct QueueView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
+        // 縦にも伸ばす。ここが固定サイズだと VStack 内に伸びる子がなくなり、
+        // minHeight との差分が上下に均等配分されてヘッダとフッタが浮いてしまう。
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.vertical, compact ? 20 : 40)
     }
 }
